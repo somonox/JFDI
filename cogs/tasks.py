@@ -15,6 +15,20 @@ class Tasks(commands.Cog):
     def cog_unload(self):
         self.reminder_loop.cancel()
 
+    def _format_tasks_list(self, now):
+        tasks_str_list = []
+        for task_id, task_data in self.tasks_dict.items():
+            content = task_data["content"]
+            deadline_str = calculate_d_day(task_data["deadline"], now)
+
+            if task_data["important"]:
+                text_block = f"```ansi\n\u001b[2;31m\u001b[1m[{task_id}] {content}{deadline_str}\u001b[0m\n```"
+                tasks_str_list.append(text_block)
+            else:
+                tasks_str_list.append(f"- [{task_id}] {content}{deadline_str}")
+
+        return "\n".join(tasks_str_list)
+
     @tasks.loop(minutes=30)
     async def reminder_loop(self):
         now = get_kst_now()
@@ -33,26 +47,22 @@ class Tasks(commands.Cog):
 
         channel = self.bot.get_channel(CHANNEL_ID)
         if channel and self.tasks_dict:
-            tasks_str_list = []
-            for task_id, task_data in self.tasks_dict.items():
-                content = task_data["content"]
-                
-                # 데드라인 계산 로직 (D-day)
-                deadline_str = calculate_d_day(task_data["deadline"], now)
-
-                # 중요도 표시 로직 (ANSI 빨간색 볼드)
-                if task_data["important"]:
-                    text_block = f"```ansi\n\u001b[2;31m\u001b[1m[{task_id}] {content}{deadline_str}\u001b[0m\n```"
-                    tasks_str_list.append(text_block)
-                else:
-                    tasks_str_list.append(f"- [{task_id}] {content}{deadline_str}")
-
-            tasks_msg = "\n".join(tasks_str_list)
+            tasks_msg = self._format_tasks_list(now)
             await channel.send(f"@everyone 🔔 **30분 알림! 오늘 할 일:**\n{tasks_msg}")
 
     @reminder_loop.before_loop
     async def before_reminder_loop(self):
         await self.bot.wait_until_ready()
+
+    @commands.command(aliases=['list'])
+    async def show(self, ctx):
+        if not self.tasks_dict:
+            await ctx.send("📭 현재 등록된 할 일이 없습니다.")
+            return
+
+        now = get_kst_now()
+        tasks_msg = self._format_tasks_list(now)
+        await ctx.send(f"📋 **현재 할 일 목록:**\n{tasks_msg}")
 
     @commands.command()
     async def add(self, ctx, *, task):

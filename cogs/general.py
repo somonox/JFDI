@@ -13,6 +13,7 @@ class General(commands.Cog):
             color=discord.Color.blue()
         )
         embed.add_field(name="`!add <할 일>`", value="새로운 할 일을 목록에 추가합니다.", inline=False)
+        embed.add_field(name="`!show` (또는 `!list`)", value="현재 등록된 할 일과 중요도/데드라인 정보를 모두 확인합니다.", inline=False)
         embed.add_field(name="`!edit <ID> <수정할 내용>`", value="기존에 작성된 할 일의 내용을 수정합니다.", inline=False)
         embed.add_field(name="`!done <ID>`", value="할 일을 완료 처리하고 목록에서 지웁니다! 수고하셨음을 알려드립니다.", inline=False)
         embed.add_field(name="`!delete <ID>`", value="목록에서 할 일을 삭제합니다.", inline=False)
