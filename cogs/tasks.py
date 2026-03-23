@@ -1,8 +1,12 @@
 import discord
 from discord.ext import commands, tasks
 from datetime import timedelta, datetime
+import json
+import os
 from config import CHANNEL_ID
 from utils.time_utils import get_kst_now, is_sleep_time, calculate_d_day
+
+DATA_FILE = "tasks_data.json"
 
 class Tasks(commands.Cog):
     def __init__(self, bot):
@@ -10,7 +14,26 @@ class Tasks(commands.Cog):
         self.tasks_dict = {}
         self.task_counter = 1
         self.dnd_until = None
+        self.load_data()
         self.reminder_loop.start()
+
+    def load_data(self):
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.task_counter = data.get("counter", 1)
+                    stored_tasks = data.get("tasks", {})
+                    self.tasks_dict = {int(k): v for k, v in stored_tasks.items()}
+            except Exception as e:
+                print(f"Error loading tasks data: {e}")
+
+    def save_data(self):
+        try:
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump({"counter": self.task_counter, "tasks": self.tasks_dict}, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"Error saving tasks data: {e}")
 
     def cog_unload(self):
         self.reminder_loop.cancel()
@@ -126,12 +149,14 @@ class Tasks(commands.Cog):
             
         await ctx.send(msg)
         self.task_counter += 1
+        self.save_data()
 
     @commands.command()
     async def edit(self, ctx, task_id: int, *, new_task):
         if task_id in self.tasks_dict:
             self.tasks_dict[task_id]["content"] = new_task
             await ctx.send(f"✏️ 수정 완료: `[{task_id}] {new_task}`")
+            self.save_data()
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -140,6 +165,7 @@ class Tasks(commands.Cog):
         if task_id in self.tasks_dict:
             del self.tasks_dict[task_id]
             await ctx.send(f"🗑️ 삭제 완료: ID `{task_id}`")
+            self.save_data()
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -149,6 +175,7 @@ class Tasks(commands.Cog):
             task_content = self.tasks_dict[task_id]["content"]
             del self.tasks_dict[task_id]
             await ctx.send(f"✔️ 완료하셨군요! 수고하셨습니다: **{task_content}**")
+            self.save_data()
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -160,6 +187,7 @@ class Tasks(commands.Cog):
             self.tasks_dict[task_id]["important"] = not self.tasks_dict[task_id]["important"]
             status = "중요" if self.tasks_dict[task_id]["important"] else "일반"
             await ctx.send(f"🔥 상태 변경: ID `{task_id}`이(가) **{status}** 상태가 되었습니다.")
+            self.save_data()
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -171,6 +199,7 @@ class Tasks(commands.Cog):
             self.tasks_dict[task_id]["hobby"] = not self.tasks_dict[task_id]["hobby"]
             status = "취미" if self.tasks_dict[task_id]["hobby"] else "일반"
             await ctx.send(f"🎨 상태 변경: ID `{task_id}`이(가) **{status}** 상태가 되었습니다.")
+            self.save_data()
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -181,6 +210,7 @@ class Tasks(commands.Cog):
                 datetime.strptime(date_str, "%Y-%m-%d")
                 self.tasks_dict[task_id]["deadline"] = date_str
                 await ctx.send(f"⏰ 데드라인 설정 완료: ID `{task_id}` -> **{date_str}**")
+                self.save_data()
             except ValueError:
                 await ctx.send("⚠️ 날짜 형식이 잘못되었습니다. `YYYY-MM-DD` 형식으로 입력해주세요. (예: 2026-03-10)")
         else:
@@ -210,6 +240,7 @@ class Tasks(commands.Cog):
         self.tasks_dict[task_id]["gambling"] = {"merchandise": merchandise, "user": user}
         
         await ctx.send(f"🎰 도박 성립! ID `{task_id}`을(를) **{deadline_str}** 까지 완료하지 못하면 {user} 님에게 **{merchandise}**을(를) 사줘야 합니다!")
+        self.save_data()
 
     @commands.command()
     async def dnd(self, ctx, hours: float):
