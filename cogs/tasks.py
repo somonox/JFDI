@@ -15,17 +15,49 @@ class Tasks(commands.Cog):
     def cog_unload(self):
         self.reminder_loop.cancel()
 
-    def _format_tasks_list(self, now):
+    def _format_tasks_list(self, now, filter_type="all"):
         tasks_str_list = []
         for task_id, task_data in self.tasks_dict.items():
+            is_important = task_data.get("important", False)
+            is_hobby = task_data.get("hobby", False)
+
+            if filter_type == "important" and not is_important:
+                continue
+            if filter_type == "hobby" and not is_hobby:
+                continue
+            if filter_type == "remain" and (is_important or is_hobby):
+                continue
+
             content = task_data["content"]
             deadline_str = calculate_d_day(task_data["deadline"], now)
 
-            if task_data["important"]:
-                text_block = f"```ansi\n\u001b[2;31m\u001b[1m[{task_id}] {content}{deadline_str}\u001b[0m\n```"
+            # 도박 로직 처리
+            gambling_str = ""
+            is_failed = False
+            if "gambling" in task_data and task_data["deadline"]:
+                merchandise = task_data["gambling"]["merchandise"]
+                user_str = task_data["gambling"]["user"]
+                
+                # 마감 기한 초과 여부 확인 (D-Day 지난 경우)
+                deadline_date = datetime.strptime(task_data["deadline"], "%Y-%m-%d").date()
+                if (deadline_date - now.date()).days < 0:
+                    is_failed = True
+                
+                if is_failed:
+                    gambling_str = f" 🚨 [벌칙 당첨] {user_str}님에게 {merchandise} 사주기!"
+                else:
+                    gambling_str = f" 🎰 (실패시 {user_str}님에게 {merchandise})"
+
+            if is_failed:
+                text_block = f"```ansi\n\u001b[2;31m\u001b[1m[{task_id}] {content}{deadline_str}{gambling_str}\u001b[0m\n```"
                 tasks_str_list.append(text_block)
+            elif is_important:
+                text_block = f"```ansi\n\u001b[2;31m\u001b[1m[{task_id}] {content}{deadline_str}{gambling_str}\u001b[0m\n```"
+                tasks_str_list.append(text_block)
+            elif is_hobby:
+                tasks_str_list.append(f"🎨 [{task_id}] {content}{deadline_str}{gambling_str}")
             else:
-                tasks_str_list.append(f"- [{task_id}] {content}{deadline_str}")
+                tasks_str_list.append(f"- [{task_id}] {content}{deadline_str}{gambling_str}")
 
         return "\n".join(tasks_str_list)
 
@@ -47,27 +79,52 @@ class Tasks(commands.Cog):
 
         channel = self.bot.get_channel(CHANNEL_ID)
         if channel and self.tasks_dict:
-            tasks_msg = self._format_tasks_list(now)
-            await channel.send(f"@everyone 🔔 **30분 알림! 오늘 할 일:**\n{tasks_msg}")
+            tasks_msg = self._format_tasks_list(now, "all")
+            if tasks_msg:
+                await channel.send(f"@everyone 🔔 **30분 알림! 오늘 할 일:**\n{tasks_msg}")
 
     @reminder_loop.before_loop
     async def before_reminder_loop(self):
         await self.bot.wait_until_ready()
 
     @commands.command(aliases=['list'])
-    async def show(self, ctx):
+    async def show(self, ctx, filter_type: str = "all"):
         if not self.tasks_dict:
             await ctx.send("📭 현재 등록된 할 일이 없습니다.")
             return
 
         now = get_kst_now()
-        tasks_msg = self._format_tasks_list(now)
-        await ctx.send(f"📋 **현재 할 일 목록:**\n{tasks_msg}")
+        tasks_msg = self._format_tasks_list(now, filter_type)
+        if not tasks_msg:
+            await ctx.send(f"📭 조건('{filter_type}')에 맞는 할 일이 없습니다.")
+            return
+        await ctx.send(f"📋 **현재 할 일 목록 ({filter_type}):**\n{tasks_msg}")
 
     @commands.command()
     async def add(self, ctx, *, task):
-        self.tasks_dict[self.task_counter] = {"content": task, "important": False, "deadline": None}
-        await ctx.send(f"✅ 추가 완료: `[{self.task_counter}] {task}`")
+        parts = task.split()
+        deadline_str = None
+        if len(parts) > 1:
+            last_word = parts[-1]
+            if last_word.lower() == 'week':
+                task = " ".join(parts[:-1])
+                now = get_kst_now()
+                target_date = now + timedelta(days=7)
+                deadline_str = target_date.strftime("%Y-%m-%d")
+            elif last_word.isdigit():
+                days = int(last_word)
+                task = " ".join(parts[:-1])
+                now = get_kst_now()
+                target_date = now + timedelta(days=days)
+                deadline_str = target_date.strftime("%Y-%m-%d")
+
+        self.tasks_dict[self.task_counter] = {"content": task, "important": False, "hobby": False, "deadline": deadline_str}
+        
+        msg = f"✅ 추가 완료: `[{self.task_counter}] {task}`"
+        if deadline_str:
+            msg += f" (자동 데드라인: {deadline_str})"
+            
+        await ctx.send(msg)
         self.task_counter += 1
 
     @commands.command()
@@ -98,9 +155,22 @@ class Tasks(commands.Cog):
     @commands.command()
     async def important(self, ctx, task_id: int):
         if task_id in self.tasks_dict:
+            if "important" not in self.tasks_dict[task_id]:
+                self.tasks_dict[task_id]["important"] = False
             self.tasks_dict[task_id]["important"] = not self.tasks_dict[task_id]["important"]
             status = "중요" if self.tasks_dict[task_id]["important"] else "일반"
             await ctx.send(f"🔥 상태 변경: ID `{task_id}`이(가) **{status}** 상태가 되었습니다.")
+        else:
+            await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+
+    @commands.command()
+    async def hobby(self, ctx, task_id: int):
+        if task_id in self.tasks_dict:
+            if "hobby" not in self.tasks_dict[task_id]:
+                self.tasks_dict[task_id]["hobby"] = False
+            self.tasks_dict[task_id]["hobby"] = not self.tasks_dict[task_id]["hobby"]
+            status = "취미" if self.tasks_dict[task_id]["hobby"] else "일반"
+            await ctx.send(f"🎨 상태 변경: ID `{task_id}`이(가) **{status}** 상태가 되었습니다.")
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -115,6 +185,31 @@ class Tasks(commands.Cog):
                 await ctx.send("⚠️ 날짜 형식이 잘못되었습니다. `YYYY-MM-DD` 형식으로 입력해주세요. (예: 2026-03-10)")
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+
+    @commands.command()
+    async def gambling(self, ctx, task_id: int, merchandise: str, deadline_input: str, user: str):
+        if task_id not in self.tasks_dict:
+            await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+            return
+
+        if deadline_input.lower() == 'week':
+            target_date = get_kst_now() + timedelta(days=7)
+            deadline_str = target_date.strftime("%Y-%m-%d")
+        elif deadline_input.isdigit():
+            target_date = get_kst_now() + timedelta(days=int(deadline_input))
+            deadline_str = target_date.strftime("%Y-%m-%d")
+        else:
+            try:
+                datetime.strptime(deadline_input, "%Y-%m-%d")
+                deadline_str = deadline_input
+            except ValueError:
+                await ctx.send("⚠️ 날짜 형식이 잘못되었습니다. 숫자, 'week', 혹은 `YYYY-MM-DD` 형식으로 입력해주세요.")
+                return
+
+        self.tasks_dict[task_id]["deadline"] = deadline_str
+        self.tasks_dict[task_id]["gambling"] = {"merchandise": merchandise, "user": user}
+        
+        await ctx.send(f"🎰 도박 성립! ID `{task_id}`을(를) **{deadline_str}** 까지 완료하지 못하면 {user} 님에게 **{merchandise}**을(를) 사줘야 합니다!")
 
     @commands.command()
     async def dnd(self, ctx, hours: float):
