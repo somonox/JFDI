@@ -82,6 +82,13 @@ class Tasks(commands.Cog):
             else:
                 tasks_str_list.append(f"- [{task_id}] {content}{deadline_str}{gambling_str}")
 
+            if "detail" in task_data:
+                tasks_str_list.append(f"  └ 📝 상세: {task_data['detail']}")
+            if "parent" in task_data:
+                tasks_str_list.append(f"  └ 🔗 상위 목표: ID {task_data['parent']}")
+            if "depends_on" in task_data and task_data["depends_on"]:
+                tasks_str_list.append(f"  └ 🔒 선행 목표: ID {', '.join(map(str, task_data['depends_on']))}")
+
         return "\n".join(tasks_str_list)
 
     @tasks.loop(minutes=30)
@@ -172,6 +179,19 @@ class Tasks(commands.Cog):
     @commands.command()
     async def done(self, ctx, task_id: int):
         if task_id in self.tasks_dict:
+            # 선행 목표 체크
+            depends_on_list = self.tasks_dict[task_id].get("depends_on", [])
+            unfinished_deps = [str(dep) for dep in depends_on_list if dep in self.tasks_dict]
+            if unfinished_deps:
+                await ctx.send(f"⚠️ ID `{task_id}`을(를) 완료하려면 먼저 선행 목표를 완료해야 합니다 (남은 선행 ID: {', '.join(unfinished_deps)}).")
+                return
+            
+            # 하위 목표 체크
+            unfinished_subtasks = [str(sid) for sid, sdata in self.tasks_dict.items() if sdata.get("parent") == task_id]
+            if unfinished_subtasks:
+                await ctx.send(f"⚠️ ID `{task_id}`을(를) 완료하려면 먼저 연결된 하위 목표를 완료해야 합니다 (남은 하위 ID: {', '.join(unfinished_subtasks)}).")
+                return
+
             task_content = self.tasks_dict[task_id]["content"]
             del self.tasks_dict[task_id]
             await ctx.send(f"✔️ 완료하셨군요! 수고하셨습니다: **{task_content}**")
@@ -241,6 +261,79 @@ class Tasks(commands.Cog):
         
         await ctx.send(f"🎰 도박 성립! ID `{task_id}`을(를) **{deadline_str}** 까지 완료하지 못하면 {user} 님에게 **{merchandise}**을(를) 사줘야 합니다!")
         self.save_data()
+
+    @commands.command()
+    async def detail(self, ctx, task_id: int, *, detailsText: str):
+        if task_id in self.tasks_dict:
+            self.tasks_dict[task_id]["detail"] = detailsText
+            await ctx.send(f"📝 상세 정보 추가 완료: ID `{task_id}` -> {detailsText}")
+            self.save_data()
+        else:
+            await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+
+    @commands.command()
+    async def subtask(self, ctx, parent_id: int, *, content: str):
+        if parent_id not in self.tasks_dict:
+            await ctx.send(f"⚠️ 상위 목표로 지정한 ID `{parent_id}`을(를) 찾을 수 없습니다.")
+            return
+
+        self.tasks_dict[self.task_counter] = {
+            "content": content,
+            "important": False,
+            "hobby": False,
+            "deadline": None,
+            "parent": parent_id
+        }
+        await ctx.send(f"🌿 하위 목표 추가 완료: `[{self.task_counter}] {content}` (상위: {parent_id})")
+        self.task_counter += 1
+        self.save_data()
+
+    @commands.command()
+    async def depend(self, ctx, task_id: int, depends_on_id: int):
+        if task_id not in self.tasks_dict:
+            await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+            return
+        if depends_on_id not in self.tasks_dict:
+            await ctx.send(f"⚠️ 선행 목표 ID `{depends_on_id}`을(를) 찾을 수 없습니다.")
+            return
+        
+        if "depends_on" not in self.tasks_dict[task_id]:
+            self.tasks_dict[task_id]["depends_on"] = []
+        
+        if depends_on_id not in self.tasks_dict[task_id]["depends_on"]:
+            self.tasks_dict[task_id]["depends_on"].append(depends_on_id)
+            await ctx.send(f"🔗 연결 완료: ID `{task_id}`은(는) 이제 ID `{depends_on_id}`이(가) 완료되어야 진행(done)할 수 있습니다.")
+            self.save_data()
+        else:
+            await ctx.send(f"⚠️ 이미 설정된 선행 목표입니다.")
+
+    @commands.command()
+    async def diagram(self, ctx):
+        if not self.tasks_dict:
+            await ctx.send("📭 목표 다이어그램을 그릴 데이터가 없습니다.")
+            return
+
+        mermaid_lines = ["graph TD"]
+        for task_id, task_data in self.tasks_dict.items():
+            safe_content = task_data['content'].replace('"', "'")
+            # Create Node
+            mermaid_lines.append(f'    T{task_id}["[{task_id}] {safe_content}"]')
+            
+            # Parent-Child
+            if "parent" in task_data and task_data["parent"] in self.tasks_dict:
+                mermaid_lines.append(f'    T{task_data["parent"]} --> T{task_id}')
+            
+            # Dependencies
+            if "depends_on" in task_data:
+                for dep_id in task_data["depends_on"]:
+                    if dep_id in self.tasks_dict:
+                        mermaid_lines.append(f'    T{dep_id} -.->|선행| T{task_id}')
+
+        mermaid_graph = "\n".join(mermaid_lines)
+        # Check length if there's massive amount of tasks, though embed limits won't matter for basic messages
+        if len(mermaid_graph) > 1900:
+            mermaid_graph = mermaid_graph[:1900] + "\n    ... (Too large to display fully)"
+        await ctx.send(f"📊 **목표 연관관계 다이어그램:**\n```mermaid\n{mermaid_graph}\n```")
 
     @commands.command()
     async def dnd(self, ctx, hours: float):
