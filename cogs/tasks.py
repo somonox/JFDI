@@ -3,6 +3,8 @@ from discord.ext import commands, tasks
 from datetime import timedelta, datetime
 import json
 import os
+import aiohttp
+import io
 from config import CHANNEL_ID
 from utils.time_utils import get_kst_now, is_sleep_time, calculate_d_day
 
@@ -330,10 +332,23 @@ class Tasks(commands.Cog):
                         mermaid_lines.append(f'    T{dep_id} -.->|선행| T{task_id}')
 
         mermaid_graph = "\n".join(mermaid_lines)
-        # Check length if there's massive amount of tasks, though embed limits won't matter for basic messages
-        if len(mermaid_graph) > 1900:
-            mermaid_graph = mermaid_graph[:1900] + "\n    ... (Too large to display fully)"
-        await ctx.send(f"📊 **목표 연관관계 다이어그램:**\n```mermaid\n{mermaid_graph}\n```")
+        
+        await ctx.send("⏳ 다이어그램 이미지를 생성 중입니다...")
+        
+        url = "https://quickchart.io/mermaid"
+        payload = {"graph": mermaid_graph, "format": "png"}
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        img_data = await resp.read()
+                        file = discord.File(io.BytesIO(img_data), filename="diagram.png")
+                        await ctx.send("📊 **목표 연관관계 다이어그램:**", file=file)
+                    else:
+                        await ctx.send(f"⚠️ 렌더링 서버 오류 ㅠㅠ (상태 코드: {resp.status})\n\n참고용 코드:\n```mermaid\n{mermaid_graph}\n```")
+        except Exception as e:
+            await ctx.send(f"⚠️ 이미지를 생성하는 동안 오류가 발생했습니다: {e}\n\n참고용 코드:\n```mermaid\n{mermaid_graph}\n```")
 
     @commands.command()
     async def dnd(self, ctx, hours: float):
