@@ -5,6 +5,8 @@ import json
 import os
 import aiohttp
 import io
+import zlib
+import base64
 from config import CHANNEL_ID
 from utils.time_utils import get_kst_now, is_sleep_time, calculate_d_day
 
@@ -335,12 +337,16 @@ class Tasks(commands.Cog):
         
         await ctx.send("⏳ 다이어그램 이미지를 생성 중입니다...")
         
-        url = "https://quickchart.io/mermaid"
-        payload = {"graph": mermaid_graph, "format": "png"}
-        
         try:
+            graph_bytes = mermaid_graph.encode('utf-8')
+            compressed = zlib.compress(graph_bytes, 9)
+            b64 = base64.urlsafe_b64encode(compressed).decode('utf-8')
+            url = f"https://kroki.io/mermaid/png/{b64}"
+            
+            headers = {"User-Agent": "Mozilla/5.0"}
+            
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as resp:
+                async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         img_data = await resp.read()
                         file = discord.File(io.BytesIO(img_data), filename="diagram.png")
