@@ -21,7 +21,7 @@ class General(commands.Cog):
         embed.add_field(name="`!hobby <ID>`", value="해당 할 일을 취미 상태로 토글합니다.", inline=False)
         embed.add_field(name="`!gambling <ID> <물건> <기한> <@유저>`", value="기한 내에 실패 시 유저에게 물건을 사주는 벌칙을 추가합니다.", inline=False)
         embed.add_field(name="`!detail <ID> <내용>`", value="할 일에 대한 세부 설명을 덧붙입니다.", inline=False)
-        embed.add_field(name="`!subtask <부모ID> <내용>`", value="특정 목표의 하위 목표를 생성합니다. (본체도 개별 할 일로 사용 가능)", inline=False)
+        embed.add_field(name="`!subtask <부모ID> <내용 혹은 자식ID>`", value="기존 할 일의 ID를 입력하면 하위 목표로 편입시키며, 일반 텍스트 입력 시 새 하위 목표를 생성합니다.", inline=False)
         embed.add_field(name="`!depend <ID> <선행ID>`", value="특정 목표를 완료하기 위해 먼저 완료해야 할 선행 목표를 설정합니다.", inline=False)
         embed.add_field(name="`!diagram`", value="설정된 하위/선행 목표들을 다이어그램(순서도)으로 시각화하여 보여줍니다.", inline=False)
         embed.add_field(name="`!deadline <ID> <YYYY-MM-DD>`", value="마감 기한을 직접 설정합니다.", inline=False)

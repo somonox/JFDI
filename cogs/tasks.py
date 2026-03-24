@@ -281,6 +281,18 @@ class Tasks(commands.Cog):
             await ctx.send(f"⚠️ 상위 목표로 지정한 ID `{parent_id}`을(를) 찾을 수 없습니다.")
             return
 
+        if content.isdigit():
+            child_id = int(content)
+            if child_id in self.tasks_dict:
+                if child_id == parent_id:
+                    await ctx.send("⚠️ 자기 자신을 하위 목표로 설정할 수 없습니다.")
+                    return
+                # 기존 태스크를 하위 태스크로 연결
+                self.tasks_dict[child_id]["parent"] = parent_id
+                await ctx.send(f"🔗 기존 목표 연결 완료: ID `{child_id}`이(가) ID `{parent_id}`의 하위 목표로 편입되었습니다.")
+                self.save_data()
+                return
+
         self.tasks_dict[self.task_counter] = {
             "content": content,
             "important": False,
