@@ -312,27 +312,47 @@ class Tasks(commands.Cog):
             await ctx.send(f"⚠️ 이미 설정된 선행 목표입니다.")
 
     @commands.command()
-    async def diagram(self, ctx):
+    async def diagram(self, ctx, page: int = 1):
         if not self.tasks_dict:
             await ctx.send("📭 목표 다이어그램을 그릴 데이터가 없습니다.")
             return
 
+        ITEMS_PER_PAGE = 10
+        total_items = len(self.tasks_dict)
+        total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+
+        if page < 1 or page > total_pages:
+            await ctx.send(f"⚠️ 페이지 범위를 벗어났습니다. (1~{total_pages}페이지)")
+            return
+
+        tasks_list = list(self.tasks_dict.items())
+        start_idx = (page - 1) * ITEMS_PER_PAGE
+        end_idx = start_idx + ITEMS_PER_PAGE
+        page_tasks = dict(tasks_list[start_idx:end_idx])
+
+        # 현재 페이지의 태스크와 연관된 부모/선행 태스크 ID 수집 (이름 표시를 위함)
+        referenced_ids = set(page_tasks.keys())
+        for task_id, task_data in page_tasks.items():
+            if "parent" in task_data and task_data["parent"] in self.tasks_dict:
+                referenced_ids.add(task_data["parent"])
+            if "depends_on" in task_data:
+                for dep in task_data["depends_on"]:
+                    if dep in self.tasks_dict:
+                        referenced_ids.add(dep)
+
         mermaid_lines = ["graph LR"]
-        for task_id, task_data in self.tasks_dict.items():
-            safe_content = task_data['content'].replace('"', "'")
-            # 텍스트가 너무 길면 다이어그램 노드가 가로로 퍼지므로 15자 단위로 줄바꿈
+        # 모든 참조된 노드 생성
+        for r_id in referenced_ids:
+            safe_content = self.tasks_dict[r_id]['content'].replace('"', "'")
             chunk_size = 15
             chunks = [safe_content[i:i+chunk_size] for i in range(0, len(safe_content), chunk_size)]
             wrapped_content = "<br>".join(chunks)
+            mermaid_lines.append(f'    T{r_id}["<b>[{r_id}]</b><br>{wrapped_content}"]')
             
-            # Create Node
-            mermaid_lines.append(f'    T{task_id}["<b>[{task_id}]</b><br>{wrapped_content}"]')
-            
-            # Parent-Child
+        # 엣지 연결 (현재 페이지 태스크 기준)
+        for task_id, task_data in page_tasks.items():
             if "parent" in task_data and task_data["parent"] in self.tasks_dict:
                 mermaid_lines.append(f'    T{task_data["parent"]} --> T{task_id}')
-            
-            # Dependencies
             if "depends_on" in task_data:
                 for dep_id in task_data["depends_on"]:
                     if dep_id in self.tasks_dict:
@@ -340,7 +360,7 @@ class Tasks(commands.Cog):
 
         mermaid_graph = "\n".join(mermaid_lines)
         
-        await ctx.send("⏳ 다이어그램 이미지를 생성 중입니다...")
+        await ctx.send(f"⏳ 다이어그램 이미지 생성 중... (페이지 {page}/{total_pages})")
         
         try:
             graph_bytes = mermaid_graph.encode('utf-8')
