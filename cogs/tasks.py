@@ -317,11 +317,16 @@ class Tasks(commands.Cog):
             await ctx.send("📭 목표 다이어그램을 그릴 데이터가 없습니다.")
             return
 
-        mermaid_lines = ["graph TD"]
+        mermaid_lines = ["graph LR"]
         for task_id, task_data in self.tasks_dict.items():
             safe_content = task_data['content'].replace('"', "'")
+            # 텍스트가 너무 길면 다이어그램 노드가 가로로 퍼지므로 15자 단위로 줄바꿈
+            chunk_size = 15
+            chunks = [safe_content[i:i+chunk_size] for i in range(0, len(safe_content), chunk_size)]
+            wrapped_content = "<br>".join(chunks)
+            
             # Create Node
-            mermaid_lines.append(f'    T{task_id}["[{task_id}] {safe_content}"]')
+            mermaid_lines.append(f'    T{task_id}["<b>[{task_id}]</b><br>{wrapped_content}"]')
             
             # Parent-Child
             if "parent" in task_data and task_data["parent"] in self.tasks_dict:
