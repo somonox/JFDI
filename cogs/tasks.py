@@ -43,7 +43,7 @@ class Tasks(commands.Cog):
         self.reminder_loop.cancel()
 
     def _format_tasks_list(self, now, filter_type="all"):
-        tasks_str_list = []
+        filtered_tasks = []
         for task_id, task_data in self.tasks_dict.items():
             is_important = task_data.get("important", False)
             is_hobby = task_data.get("hobby", False)
@@ -54,8 +54,27 @@ class Tasks(commands.Cog):
                 continue
             if filter_type == "remain" and (is_important or is_hobby):
                 continue
+            
+            filtered_tasks.append((task_id, task_data))
+            
+        def sort_key(item):
+            t_id, t_data = item
+            # 취미는 무조건 맨 하단 (True는 1, False는 0)
+            is_hobby_val = 1 if t_data.get("hobby", False) else 0
+            # 나머지는 난이도 낮은 순서대로 오름차순 (0부터)
+            diff_val = t_data.get("difficulty", 0)
+            return (is_hobby_val, diff_val, t_id)
+            
+        filtered_tasks.sort(key=sort_key)
 
-            content = task_data["content"]
+        tasks_str_list = []
+        for task_id, task_data in filtered_tasks:
+            is_important = task_data.get("important", False)
+            is_hobby = task_data.get("hobby", False)
+            difficulty = task_data.get("difficulty", 0)
+
+            diff_str = f" [난이도: {'⭐'*difficulty}]" if not is_hobby and difficulty > 0 else ""
+            content = f"{task_data['content']}{diff_str}"
             deadline_str = calculate_d_day(task_data["deadline"], now)
 
             # 도박 로직 처리
@@ -274,6 +293,24 @@ class Tasks(commands.Cog):
             self.save_data()
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+
+    @commands.command()
+    async def difficulty(self, ctx, task_id: int, level: int):
+        if task_id not in self.tasks_dict:
+            await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+            return
+
+        if self.tasks_dict[task_id].get("hobby", False):
+            await ctx.send("⚠️ 취미 상태인 목표는 작업 난이도를 설정할 수 없습니다.")
+            return
+
+        if not 1 <= level <= 5:
+            await ctx.send("⚠️ 작업 난이도는 1에서 5 사이의 숫자여야 합니다.")
+            return
+
+        self.tasks_dict[task_id]["difficulty"] = level
+        await ctx.send(f"🔥 난이도 설정 완료: ID `{task_id}` -> **{'⭐'*level}**")
+        self.save_data()
 
     @commands.command()
     async def subtask(self, ctx, parent_id: int, *, content: str):

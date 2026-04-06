@@ -18,7 +18,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 async def on_ready():
     print(f'{bot.user} 온라인!')
     # Cogs 로드
-    initial_extensions = ['cogs.tasks', 'cogs.general']
+    initial_extensions = ['cogs.tasks', 'cogs.general', 'cogs.timetable']
     for extension in initial_extensions:
         try:
             await bot.load_extension(extension)
