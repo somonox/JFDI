@@ -10,6 +10,7 @@ from config import TOKEN
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 # 기본 help 명령어 비활성화 (커스텀 help를 위해)
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)

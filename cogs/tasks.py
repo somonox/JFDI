@@ -17,7 +17,7 @@ class Tasks(commands.Cog):
         self.bot = bot
         self.tasks_dict = {}
         self.task_counter = 1
-        self.dnd_until = None
+        self.user_dnd = {}  # {user_id: until_datetime}
         self.load_data()
         self.reminder_loop.start()
 
@@ -29,13 +29,30 @@ class Tasks(commands.Cog):
                     self.task_counter = data.get("counter", 1)
                     stored_tasks = data.get("tasks", {})
                     self.tasks_dict = {int(k): v for k, v in stored_tasks.items()}
+                    
+                    # DND 데이터 로드
+                    user_dnd_raw = data.get("user_dnd", {})
+                    now = get_kst_now()
+                    for uid, until_str in user_dnd_raw.items():
+                        try:
+                            until_dt = datetime.fromisoformat(until_str)
+                            if until_dt > now:
+                                self.user_dnd[int(uid)] = until_dt
+                        except:
+                            continue
             except Exception as e:
                 print(f"Error loading tasks data: {e}")
 
     def save_data(self):
         try:
+            # DND 데이터를 문자열로 변환
+            dnd_data = {str(uid): dt.isoformat() for uid, dt in self.user_dnd.items()}
             with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump({"counter": self.task_counter, "tasks": self.tasks_dict}, f, ensure_ascii=False, indent=4)
+                json.dump({
+                    "counter": self.task_counter, 
+                    "tasks": self.tasks_dict,
+                    "user_dnd": dnd_data
+                }, f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"Error saving tasks data: {e}")
 
@@ -123,18 +140,32 @@ class Tasks(commands.Cog):
             print(f"취침 시간(KST {now.hour}시)이라 알림을 건너뜁니다.")
             return
 
-        # 방해금지 모드 체크
-        if self.dnd_until and now < self.dnd_until:
-            print(f"방해금지 모드 켜짐 (종료 시간: {self.dnd_until.strftime('%Y-%m-%d %H:%M:%S')})")
-            return
-        elif self.dnd_until and now >= self.dnd_until:
-            self.dnd_until = None # 기간 종료시 초기화
+        # 기간이 지난 DND 항목 정리
+        expired_uids = [uid for uid, until in self.user_dnd.items() if now >= until]
+        for uid in expired_uids:
+            del self.user_dnd[uid]
+        if expired_uids:
+            self.save_data()
 
         channel = self.bot.get_channel(CHANNEL_ID)
         if channel and self.tasks_dict:
+            # 멘션 대상 결정
+            members = [m for m in channel.members if not m.bot]
+            non_dnd_members = [m for m in members if m.id not in self.user_dnd]
+            
+            # 모든 멤버가 DND 중이면 알림 건너뜀
+            if not non_dnd_members:
+                print(f"모든 멤버가 방해금지 모드라 알림을 건너뜁니다.")
+                return
+
+            mention_str = "@everyone"
+            # 한명이라도 DND 중이면 (그리고 모두가 DND인 건 아니면) 개별 멘션
+            if len(non_dnd_members) < len(members):
+                mention_str = " ".join([m.mention for m in non_dnd_members])
+
             tasks_msg = self._format_tasks_list(now, "all")
             if tasks_msg:
-                await channel.send(f"@everyone 🔔 **30분 알림! 오늘 할 일:**\n{tasks_msg}")
+                await channel.send(f"{mention_str} 🔔 **30분 알림! 오늘 할 일:**\n{tasks_msg}")
 
     @reminder_loop.before_loop
     async def before_reminder_loop(self):
@@ -433,13 +464,19 @@ class Tasks(commands.Cog):
     @commands.command()
     async def dnd(self, ctx, hours: float):
         now = get_kst_now()
-        self.dnd_until = now + timedelta(hours=hours)
-        await ctx.send(f"🔇 방해금지 모드가 설정되었습니다. ({hours}시간 동안 알림이 오지 않습니다.)\n종료 예정: `{self.dnd_until.strftime('%Y-%m-%d %H:%M:%S')} KST`")
+        until = now + timedelta(hours=hours)
+        self.user_dnd[ctx.author.id] = until
+        self.save_data()
+        await ctx.send(f"🔇 {ctx.author.mention}님 정숙! {hours}시간 동안 알림에서 제외됩니다.\n종료 예정: `{until.strftime('%Y-%m-%d %H:%M:%S')} KST`")
 
     @commands.command()
     async def dnd_off(self, ctx):
-        self.dnd_until = None
-        await ctx.send("🔊 방해금지 모드가 해제되었습니다. 알림이 다시 시작됩니다.")
+        if ctx.author.id in self.user_dnd:
+            del self.user_dnd[ctx.author.id]
+            self.save_data()
+            await ctx.send(f"🔊 {ctx.author.mention}님의 방해금지 모드가 해제되었습니다.")
+        else:
+            await ctx.send(f"❓ {ctx.author.mention}님은 현재 방해금지 모드가 아닙니다.")
 
 async def setup(bot):
     await bot.add_cog(Tasks(bot))
