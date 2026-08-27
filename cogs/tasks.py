@@ -32,6 +32,7 @@ class Tasks(commands.Cog):
         self.user_dnd = {}  # {user_id: until_datetime}
         self._document_extras = {}
         self.tli_credentials = {}
+        self._tli_clients = {}
         self.load_data()
         self.load_tli_credentials()
         self.reminder_loop.start()
@@ -88,29 +89,53 @@ class Tasks(commands.Cog):
             with open(TLI_CREDENTIALS_FILE, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             users = raw.get("users", raw) if isinstance(raw, dict) else {}
-            self.tli_credentials = {
-                str(user_id): record
-                for user_id, record in users.items()
-                if isinstance(record, dict) and isinstance(record.get("token"), str)
-            }
+            normalized = {}
+            for user_id, record in users.items():
+                if not isinstance(record, dict):
+                    continue
+                access_token = record.get("access_token") or record.get("token")
+                if not isinstance(access_token, str):
+                    continue
+                normalized[str(user_id)] = {
+                    "access_token": access_token,
+                    "refresh_token": record.get("refresh_token"),
+                    "expires_at": record.get("expires_at"),
+                    "tli_user_id": record.get("tli_user_id"),
+                }
+            self.tli_credentials = normalized
+            self._tli_clients.clear()
         except Exception as e:
             print(f"Error loading TLITODOS credentials: {e}")
 
     def save_tli_credentials(self):
         save_json_atomic(
             TLI_CREDENTIALS_FILE,
-            {"schema_version": 1, "users": self.tli_credentials},
+            {"schema_version": 2, "users": self.tli_credentials},
+            file_mode=0o600,
         )
-        try:
-            os.chmod(TLI_CREDENTIALS_FILE, 0o600)
-        except OSError:
-            pass
 
     def _tli_client_for(self, user_id):
-        record = self.tli_credentials.get(str(user_id))
+        user_key = str(user_id)
+        record = self.tli_credentials.get(user_key)
         if not record:
             return None
-        return TLITODOSClient(record["token"], TLI_BASE_URL)
+        cached = self._tli_clients.get(user_key)
+        if cached:
+            return cached
+
+        def persist_session(session):
+            record.update(session)
+            record.pop("token", None)
+            self.save_tli_credentials()
+
+        client = TLITODOSClient(
+            record.get("access_token") or record.get("token", ""),
+            TLI_BASE_URL,
+            refresh_token=record.get("refresh_token"),
+            on_session_update=persist_session,
+        )
+        self._tli_clients[user_key] = client
+        return client
 
     def _build_task(self, raw_task):
         parts = raw_task.split()
@@ -148,7 +173,7 @@ class Tasks(commands.Cog):
     @staticmethod
     def _tli_error_text(error):
         if error.status == 401:
-            return "TLITODOS 토큰이 만료되었거나 유효하지 않습니다. `!reg_tli <token>`으로 다시 등록해 주세요."
+            return "TLITODOS 세션이 만료되었거나 유효하지 않습니다. `!reg_tli <accessToken> [refreshToken]`으로 다시 등록해 주세요."
         return f"TLITODOS 오류: {error}"
 
     def cog_unload(self):
@@ -289,24 +314,48 @@ class Tasks(commands.Cog):
         await ctx.send(msg)
 
     @commands.command()
-    async def reg_tli(self, ctx, *, token):
+    async def reg_tli(self, ctx, access_token, refresh_token=None):
         message_deleted = True
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             message_deleted = False
 
-        client = TLITODOSClient(token.strip(), TLI_BASE_URL)
+        access_token = access_token.strip()
+        refresh_token = refresh_token.strip() if refresh_token else None
+        client = TLITODOSClient(
+            access_token,
+            TLI_BASE_URL,
+            refresh_token=refresh_token,
+        )
         try:
             profile = await client.me()
         except TLITODOSError as error:
-            await ctx.send(f"⚠️ {self._tli_error_text(error)}")
-            return
+            if error.status != 401 or refresh_token is not None:
+                await ctx.send(f"⚠️ {self._tli_error_text(error)}")
+                return
+            # A single argument may be a refresh token. This keeps the old
+            # single-access-token form working while allowing refresh-only registration.
+            client = TLITODOSClient(
+                "",
+                TLI_BASE_URL,
+                refresh_token=access_token,
+            )
+            try:
+                await client.refresh_session()
+                profile = await client.me()
+            except TLITODOSError as refresh_error:
+                await ctx.send(f"⚠️ {self._tli_error_text(refresh_error)}")
+                return
 
-        self.tli_credentials[str(ctx.author.id)] = {
-            "token": token.strip(),
+        user_key = str(ctx.author.id)
+        self.tli_credentials[user_key] = {
+            "access_token": client.access_token,
+            "refresh_token": client.refresh_token,
+            "expires_at": client.expires_at,
             "tli_user_id": profile.get("userId"),
         }
+        self._tli_clients.pop(user_key, None)
         self.save_tli_credentials()
         warning = "" if message_deleted else " 봇에 메시지 삭제 권한이 없어 원본 토큰 메시지는 직접 삭제해 주세요."
         await ctx.send(f"🔐 {ctx.author.mention}님의 TLITODOS 계정을 등록했습니다.{warning}")
@@ -315,7 +364,7 @@ class Tasks(commands.Cog):
     async def add_both(self, ctx, *, task):
         client = self._tli_client_for(ctx.author.id)
         if client is None:
-            await ctx.send("⚠️ 먼저 `!reg_tli <token>`으로 TLITODOS 토큰을 등록해 주세요.")
+            await ctx.send("⚠️ 먼저 `!reg_tli <accessToken> [refreshToken]`으로 TLITODOS 토큰을 등록해 주세요.")
             return
 
         task_data = self._build_task(task)
@@ -343,7 +392,7 @@ class Tasks(commands.Cog):
 
         client = self._tli_client_for(ctx.author.id)
         if client is None:
-            await ctx.send("⚠️ 먼저 `!reg_tli <token>`으로 TLITODOS 토큰을 등록해 주세요.")
+            await ctx.send("⚠️ 먼저 `!reg_tli <accessToken> [refreshToken]`으로 TLITODOS 토큰을 등록해 주세요.")
             return
 
         link = task_data.get("tli")
@@ -382,7 +431,7 @@ class Tasks(commands.Cog):
         if task_id in self.tasks_dict:
             client, link = self._linked_tli_client(self.tasks_dict[task_id])
             if link is not None and client is None:
-                await ctx.send("⚠️ 연결된 TLITODOS 항목을 삭제할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <token>`으로 다시 등록해야 합니다.")
+                await ctx.send("⚠️ 연결된 TLITODOS 항목을 삭제할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <accessToken> [refreshToken]`으로 다시 등록해야 합니다.")
                 return
             if link is not None:
                 try:
@@ -417,7 +466,7 @@ class Tasks(commands.Cog):
             task_content = self.tasks_dict[task_id]["content"]
             client, link = self._linked_tli_client(self.tasks_dict[task_id])
             if link is not None and client is None:
-                await ctx.send("⚠️ 연결된 TLITODOS 항목을 완료할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <token>`으로 다시 등록해야 합니다.")
+                await ctx.send("⚠️ 연결된 TLITODOS 항목을 완료할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <accessToken> [refreshToken]`으로 다시 등록해야 합니다.")
                 return
             if link is not None:
                 try:

@@ -13,7 +13,7 @@ class General(commands.Cog):
             color=discord.Color.blue()
         )
         embed.add_field(name="`!add <할 일> [키워드/숫자]`", value="할 일을 추가합니다. 마지막에 `week` 혹은 숫자(일수)를 적으면 기한이 자동 계산됩니다.", inline=False)
-        embed.add_field(name="`!reg_tli <token>`", value="자신의 TLITODOS 액세스 토큰을 등록합니다. 가능한 경우 토큰이 포함된 원본 메시지는 즉시 삭제됩니다.", inline=False)
+        embed.add_field(name="`!reg_tli <accessToken> [refreshToken]`", value="자신의 TLITODOS 토큰을 등록합니다. 리프레시 토큰을 함께 등록하면 만료 시 자동 갱신합니다. 리프레시 토큰 하나만 등록하는 것도 가능합니다.", inline=False)
         embed.add_field(name="`!add_both <할 일> [키워드/숫자]`", value="JFDI와 자신의 TLITODOS에 할 일을 함께 추가합니다.", inline=False)
         embed.add_field(name="`!sync_tli <ID>`", value="기존 JFDI 할 일을 자신의 TLITODOS에 생성하거나 연결된 항목을 갱신합니다.", inline=False)
         embed.add_field(name="`!show [필터]` (또는 `!list`)", value="현재 할 일을 확인합니다. 필터: `all`, `important`, `hobby`, `remain`", inline=False)

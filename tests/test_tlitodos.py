@@ -28,6 +28,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.requests = []
         app = web.Application()
         app.router.add_get("/api/v1/users/me", self.me)
+        app.router.add_post("/api/v1/auth/refresh", self.refresh)
         app.router.add_get("/api/v1/categories", self.categories)
         app.router.add_post("/api/v1/todos", self.create_todo)
         app.router.add_delete("/api/v1/todos/{todo_id}", self.delete_todo)
@@ -43,9 +44,27 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def me(self, request):
         self.requests.append(request)
-        if request.headers.get("Authorization") != "Bearer per-user-token":
+        if request.headers.get("Authorization") not in {
+            "Bearer per-user-token",
+            "Bearer refreshed-access-token",
+        }:
             return web.json_response({"detail": {"message": "bad token"}}, status=401)
         return web.json_response({"userId": 7, "name": "tester"})
+
+    async def refresh(self, request):
+        self.requests.append(request)
+        body = await request.json()
+        if body.get("refreshToken") != "old-refresh-token":
+            return web.json_response(
+                {"detail": {"message": "bad refresh token"}}, status=401
+            )
+        return web.json_response(
+            {
+                "accessToken": "refreshed-access-token",
+                "refreshToken": "rotated-refresh-token",
+                "expiresAt": "2026-08-28T00:00:00Z",
+            }
+        )
 
     async def categories(self, request):
         self.requests.append(request)
@@ -79,6 +98,38 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await self.client.delete_todo(99)
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(str(caught.exception), "already gone")
+
+    async def test_401_refreshes_rotates_persists_and_retries(self):
+        updates = []
+        client = TLITODOSClient(
+            "expired-access-token",
+            self.client.base_url,
+            refresh_token="old-refresh-token",
+            on_session_update=updates.append,
+        )
+
+        profile = await client.me()
+
+        self.assertEqual(profile["userId"], 7)
+        self.assertEqual(client.access_token, "refreshed-access-token")
+        self.assertEqual(client.refresh_token, "rotated-refresh-token")
+        self.assertEqual(
+            updates,
+            [
+                {
+                    "access_token": "refreshed-access-token",
+                    "refresh_token": "rotated-refresh-token",
+                    "expires_at": "2026-08-28T00:00:00Z",
+                }
+            ],
+        )
+        refresh_requests = [
+            request
+            for request in self.requests
+            if request.path.endswith("/auth/refresh")
+        ]
+        self.assertEqual(len(refresh_requests), 1)
+        self.assertIsNone(refresh_requests[0].headers.get("Authorization"))
 
 
 if __name__ == "__main__":

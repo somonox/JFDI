@@ -51,15 +51,27 @@ def load_task_document(path: str | Path) -> tuple[dict[str, Any], bool]:
         return migrate_task_document(json.load(handle))
 
 
-def save_json_atomic(path: str | Path, document: dict[str, Any]) -> None:
+def save_json_atomic(
+    path: str | Path,
+    document: dict[str, Any],
+    *,
+    file_mode: int | None = None,
+) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        file_mode if file_mode is not None else 0o666,
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(document, handle, ensure_ascii=False, indent=4)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, destination)
+    if file_mode is not None:
+        os.chmod(destination, file_mode)
 
 
 def backup_legacy_file(path: str | Path) -> Path | None:

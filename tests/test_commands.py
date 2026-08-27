@@ -59,11 +59,21 @@ def task_cog(tasks=None):
     cog.user_dnd = {}
     cog._document_extras = {}
     cog.tli_credentials = {}
+    cog._tli_clients = {}
     cog.save_data = lambda: None
     return cog
 
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_access_token_record_still_builds_client(self):
+        cog = task_cog()
+        cog.tli_credentials["42"] = {"token": "legacy-access-token"}
+
+        client = cog._tli_client_for(42)
+
+        self.assertEqual(client.access_token, "legacy-access-token")
+        self.assertIsNone(client.refresh_token)
+
     async def test_add_remains_local_only(self):
         cog = task_cog()
         ctx = FakeContext()

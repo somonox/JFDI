@@ -1,4 +1,5 @@
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,12 @@ class TaskStorageTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(backup.read_text(encoding="utf-8"))["counter"], 1
             )
+
+    def test_secret_file_mode_is_applied_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "credentials.json"
+            save_json_atomic(path, {"refresh_token": "secret"}, file_mode=0o600)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
 
 if __name__ == "__main__":

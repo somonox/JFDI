@@ -15,7 +15,8 @@ cp .env.example .env
 
 ## TLITODOS 명령
 
-- `!reg_tli <access-token>`: 명령을 실행한 Discord 사용자의 TLITODOS 토큰을 등록합니다.
+- `!reg_tli <accessToken> [refreshToken]`: 명령을 실행한 Discord 사용자의 TLITODOS 토큰을 등록합니다.
+  리프레시 토큰 하나만 전달해도 자동으로 액세스 토큰을 발급합니다.
 - `!add <내용>`: 기존 동작 그대로 JFDI에만 등록합니다.
 - `!add_both <내용>`: JFDI와 등록한 사용자의 TLITODOS에 함께 등록합니다.
 - `!sync_tli <JFDI ID>`: 기존 JFDI 항목을 TLITODOS에 생성합니다. 이미 연결됐다면 내용을 갱신합니다.
@@ -24,7 +25,9 @@ cp .env.example .env
 
 `!reg_tli`는 토큰이 들어 있는 원본 Discord 메시지를 가능한 경우 즉시 삭제합니다. 토큰은
 `tli_credentials.json`에 저장되며 파일 권한은 `0600`으로 설정됩니다. 이 파일은 Git에서 제외됩니다.
-TLITODOS 액세스 토큰이 만료되면 `!reg_tli`로 다시 등록해야 합니다.
+리프레시 토큰이 등록되어 있으면 API 요청이 `401`을 반환할 때 자동으로 세션을 갱신하고 실패한
+요청을 한 번 재시도합니다. 서버가 새 리프레시 토큰을 발급하면 저장된 토큰도 즉시 교체합니다.
+기존 `!reg_tli <accessToken>` 형식도 계속 지원하지만, 리프레시 토큰이 없으면 만료 후 재등록해야 합니다.
 
 ## 기존 JSON 마이그레이션
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,14 +43,32 @@ def task_to_tli_payload(task: dict[str, Any]) -> dict[str, Any]:
 
 
 class TLITODOSClient:
-    def __init__(self, token: str, base_url: str):
-        self.token = token
+    def __init__(
+        self,
+        access_token: str,
+        base_url: str,
+        *,
+        refresh_token: str | None = None,
+        on_session_update: Callable[[dict[str, Any]], None] | None = None,
+    ):
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.expires_at: str | None = None
         self.base_url = base_url.rstrip("/")
+        self.on_session_update = on_session_update
 
     async def _request(
-        self, method: str, path: str, *, payload: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        authenticate: bool = True,
+        retry_after_refresh: bool = True,
     ) -> Any:
-        headers = {"Authorization": f"Bearer {self.token}"}
+        headers = {}
+        if authenticate:
+            headers["Authorization"] = f"Bearer {self.access_token}"
         if payload is not None:
             headers["Content-Type"] = "application/json"
 
@@ -70,6 +89,21 @@ class TLITODOSClient:
                 except json.JSONDecodeError:
                     body = response_text
 
+                if (
+                    response.status == 401
+                    and authenticate
+                    and retry_after_refresh
+                    and self.refresh_token
+                ):
+                    await self.refresh_session()
+                    return await self._request(
+                        method,
+                        path,
+                        payload=payload,
+                        authenticate=authenticate,
+                        retry_after_refresh=False,
+                    )
+
                 if response.status >= 400:
                     message = (
                         _error_message(body)
@@ -83,6 +117,32 @@ class TLITODOSClient:
             raise TLITODOSError(
                 0, f"TLITODOS 서버에 연결할 수 없습니다: {error}"
             ) from error
+
+    async def refresh_session(self) -> dict[str, Any]:
+        if not self.refresh_token:
+            raise TLITODOSError(401, "저장된 TLITODOS 리프레시 토큰이 없습니다.")
+
+        result = await self._request(
+            "POST",
+            "/api/v1/auth/refresh",
+            payload={"refreshToken": self.refresh_token},
+            authenticate=False,
+            retry_after_refresh=False,
+        )
+        if not isinstance(result, dict) or not result.get("accessToken"):
+            raise TLITODOSError(502, "TLITODOS 토큰 갱신 응답이 올바르지 않습니다.")
+
+        self.access_token = result["accessToken"]
+        self.refresh_token = result.get("refreshToken") or self.refresh_token
+        self.expires_at = result.get("expiresAt")
+        session = {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "expires_at": self.expires_at,
+        }
+        if self.on_session_update:
+            self.on_session_update(session)
+        return session
 
     async def me(self) -> dict[str, Any]:
         result = await self._request("GET", "/api/v1/users/me")
