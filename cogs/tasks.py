@@ -137,7 +137,7 @@ class Tasks(commands.Cog):
         self._tli_clients[user_key] = client
         return client
 
-    def _build_task(self, raw_task):
+    def _build_task(self, raw_task, *, require_deadline=False):
         parts = raw_task.split()
         deadline_str = None
         content = raw_task
@@ -149,6 +149,8 @@ class Tasks(commands.Cog):
             elif last_word.isdigit():
                 content = " ".join(parts[:-1])
                 deadline_str = (get_kst_now() + timedelta(days=int(last_word))).strftime("%Y-%m-%d")
+        if require_deadline and deadline_str is None:
+            raise ValueError("deadline is required")
         return {
             "content": content,
             "important": False,
@@ -367,7 +369,13 @@ class Tasks(commands.Cog):
             await ctx.send("⚠️ 먼저 `!reg_tli <accessToken> [refreshToken]`으로 TLITODOS 토큰을 등록해 주세요.")
             return
 
-        task_data = self._build_task(task)
+        try:
+            task_data = self._build_task(task, require_deadline=True)
+        except ValueError:
+            await ctx.send(
+                "⚠️ TLITODOS에는 마감일이 필요합니다. `!add_both <내용> <D-day 숫자|week>` 형식으로 입력해 주세요. 예: `!add_both 과제 제출 3`"
+            )
+            return
         try:
             todo_id = await client.create_todo(task_data)
         except TLITODOSError as error:
@@ -388,6 +396,11 @@ class Tasks(commands.Cog):
         task_data = self.tasks_dict.get(task_id)
         if task_data is None:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+            return
+        if not task_data.get("deadline"):
+            await ctx.send(
+                f"⚠️ ID `{task_id}`에 마감일이 없습니다. 먼저 `!deadline {task_id} YYYY-MM-DD`로 설정해 주세요."
+            )
             return
 
         client = self._tli_client_for(ctx.author.id)

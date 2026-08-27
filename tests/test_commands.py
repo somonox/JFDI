@@ -98,6 +98,29 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         expected_deadline = (get_kst_now() + timedelta(days=2)).strftime("%Y-%m-%d")
         self.assertEqual(task["deadline"], expected_deadline)
 
+    async def test_add_both_requires_dday_without_calling_tli(self):
+        cog = task_cog()
+        ctx = FakeContext(user_id=77)
+        client = FakeTLIClient()
+        cog._tli_client_for = lambda _: client
+
+        await Tasks.add_both.callback(cog, ctx, task="마감일 없는 항목")
+
+        self.assertEqual(cog.tasks_dict, {})
+        self.assertEqual(client.created, [])
+        self.assertIn("D-day", ctx.sent[-1])
+
+    async def test_sync_requires_existing_deadline(self):
+        cog = task_cog({5: {"content": "기존 무기한 항목", "deadline": None}})
+        ctx = FakeContext(user_id=77)
+        cog._tli_client_for = lambda _: self.fail(
+            "deadline validation must happen before TLITODOS access"
+        )
+
+        await Tasks.sync_tli.callback(cog, ctx, task_id=5)
+
+        self.assertIn("!deadline 5", ctx.sent[-1])
+
     async def test_delete_removes_remote_before_local(self):
         task = {
             "content": "연결됨",

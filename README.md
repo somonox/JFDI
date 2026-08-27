@@ -18,8 +18,10 @@ cp .env.example .env
 - `!reg_tli <accessToken> [refreshToken]`: 명령을 실행한 Discord 사용자의 TLITODOS 토큰을 등록합니다.
   리프레시 토큰 하나만 전달해도 자동으로 액세스 토큰을 발급합니다.
 - `!add <내용>`: 기존 동작 그대로 JFDI에만 등록합니다.
-- `!add_both <내용>`: JFDI와 등록한 사용자의 TLITODOS에 함께 등록합니다.
-- `!sync_tli <JFDI ID>`: 기존 JFDI 항목을 TLITODOS에 생성합니다. 이미 연결됐다면 내용을 갱신합니다.
+- `!add_both <내용> <D-day 숫자|week>`: 마감일을 필수로 지정해 JFDI와 등록한 사용자의
+  TLITODOS에 함께 등록합니다. `0`은 오늘, `3`은 3일 뒤, `week`는 7일 뒤입니다.
+- `!sync_tli <JFDI ID>`: 마감일이 설정된 기존 JFDI 항목을 TLITODOS에 생성합니다. 이미 연결됐다면
+  내용을 갱신합니다. 마감일이 없다면 먼저 `!deadline <ID> YYYY-MM-DD`를 사용해야 합니다.
 - `!delete <JFDI ID>`: 연결된 TLITODOS 항목이 있으면 원격 삭제가 성공한 뒤 JFDI에서도 삭제합니다.
 - `!done <JFDI ID>`: 연결된 TLITODOS 항목을 완료 처리한 뒤 JFDI 목록에서 제거합니다.
 
