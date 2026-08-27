@@ -28,8 +28,6 @@ def task_to_tli_payload(task: dict[str, Any]) -> dict[str, Any]:
         difficulty = 1
 
     due_date = task.get("deadline")
-    if due_date:
-        due_date = f"{due_date}T23:59:00"
 
     return {
         "title": str(task.get("content", "")).strip(),
@@ -151,8 +149,20 @@ class TLITODOSClient:
     async def _category_id(self) -> int:
         categories = await self._request("GET", "/api/v1/categories")
         if isinstance(categories, list):
+            # TLITODOS seeds "취미" first, so taking categories[0] makes
+            # ordinary JFDI tasks land in the wrong column. Match the names
+            # recognized as the main todo category by the frontend instead.
+            preferred_names = {"해야할일", "할일", "과제"}
+            for category in categories:
+                normalized_name = "".join(str(category.get("name", "")).split())
+                if normalized_name in preferred_names:
+                    return int(category["categoryId"])
             for category in categories:
                 if category.get("name") == "JFDI":
+                    return int(category["categoryId"])
+            for category in categories:
+                normalized_name = "".join(str(category.get("name", "")).split())
+                if normalized_name != "취미":
                     return int(category["categoryId"])
             if categories:
                 return int(categories[0]["categoryId"])
@@ -160,7 +170,7 @@ class TLITODOSClient:
         created = await self._request(
             "POST",
             "/api/v1/categories",
-            payload={"name": "JFDI", "color": "#145DFF"},
+            payload={"name": "할일", "color": "#33FF57"},
         )
         return int(created["categoryId"])
 
@@ -173,7 +183,7 @@ class TLITODOSClient:
     async def update_todo(self, todo_id: int, task: dict[str, Any]) -> None:
         payload = task_to_tli_payload(task)
         payload.pop("isRoutine", None)
-        # categoryId is intentionally left unchanged when synchronizing an existing item.
+        payload["categoryId"] = await self._category_id()
         await self._request("PATCH", f"/api/v1/todos/{todo_id}", payload=payload)
 
     async def delete_todo(self, todo_id: int) -> None:
