@@ -36,7 +36,7 @@ def task_to_tli_payload(task: dict[str, Any]) -> dict[str, Any]:
         "dueDate": due_date,
         "visibility": "PRIVATE",
         "groupId": None,
-        "isRoutine": False,
+        "isRoutine": True,
     }
 
 

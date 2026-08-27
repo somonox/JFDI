@@ -21,6 +21,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["hardship"], 5)
         self.assertEqual(payload["dueDate"], "2026-08-27")
         self.assertEqual(payload["visibility"], "PRIVATE")
+        self.assertTrue(payload["isRoutine"])
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
@@ -81,6 +82,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         body = await request.json()
         self.assertEqual(body["categoryId"], 4)
         self.assertEqual(body["title"], "동기화 테스트")
+        self.assertTrue(body["isRoutine"])
         return web.json_response({"todoId": 99}, status=201)
 
     async def delete_todo(self, request):
