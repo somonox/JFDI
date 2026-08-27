@@ -7,10 +7,22 @@ import aiohttp
 import io
 import zlib
 import base64
-from config import CHANNEL_ID
+from config import (
+    CHANNEL_ID,
+    TASKS_DATA_FILE,
+    TLI_BASE_URL,
+    TLI_CREDENTIALS_FILE,
+)
 from utils.time_utils import get_kst_now, is_sleep_time, calculate_d_day
+from utils.task_storage import (
+    CURRENT_SCHEMA_VERSION,
+    backup_legacy_file,
+    load_task_document,
+    save_json_atomic,
+)
+from utils.tlitodos import TLITODOSClient, TLITODOSError
 
-DATA_FILE = "tasks_data.json"
+DATA_FILE = TASKS_DATA_FILE
 
 class Tasks(commands.Cog):
     def __init__(self, bot):
@@ -18,43 +30,126 @@ class Tasks(commands.Cog):
         self.tasks_dict = {}
         self.task_counter = 1
         self.user_dnd = {}  # {user_id: until_datetime}
+        self._document_extras = {}
+        self.tli_credentials = {}
         self.load_data()
+        self.load_tli_credentials()
         self.reminder_loop.start()
 
     def load_data(self):
-        if os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.task_counter = data.get("counter", 1)
-                    stored_tasks = data.get("tasks", {})
-                    self.tasks_dict = {int(k): v for k, v in stored_tasks.items()}
-                    
-                    # DND 데이터 로드
-                    user_dnd_raw = data.get("user_dnd", {})
-                    now = get_kst_now()
-                    for uid, until_str in user_dnd_raw.items():
-                        try:
-                            until_dt = datetime.fromisoformat(until_str)
-                            if until_dt > now:
-                                self.user_dnd[int(uid)] = until_dt
-                        except:
-                            continue
-            except Exception as e:
-                print(f"Error loading tasks data: {e}")
+        if not os.path.exists(DATA_FILE):
+            return
+        try:
+            data, migrated = load_task_document(DATA_FILE)
+            self.task_counter = data["counter"]
+            self.tasks_dict = data["tasks"]
+            self._document_extras = {
+                key: value
+                for key, value in data.items()
+                if key not in {"schema_version", "counter", "tasks", "user_dnd"}
+            }
+
+            user_dnd_raw = data.get("user_dnd", {})
+            now = get_kst_now()
+            for uid, until_str in user_dnd_raw.items():
+                try:
+                    until_dt = datetime.fromisoformat(until_str)
+                    if until_dt > now:
+                        self.user_dnd[int(uid)] = until_dt
+                except (TypeError, ValueError):
+                    continue
+
+            if migrated:
+                backup_legacy_file(DATA_FILE)
+                self.save_data()
+                print("Migrated legacy tasks JSON to schema version 2.")
+        except Exception as e:
+            print(f"Error loading tasks data: {e}")
 
     def save_data(self):
         try:
             # DND 데이터를 문자열로 변환
             dnd_data = {str(uid): dt.isoformat() for uid, dt in self.user_dnd.items()}
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump({
-                    "counter": self.task_counter, 
-                    "tasks": self.tasks_dict,
-                    "user_dnd": dnd_data
-                }, f, ensure_ascii=False, indent=4)
+            document = dict(self._document_extras)
+            document.update({
+                "schema_version": CURRENT_SCHEMA_VERSION,
+                "counter": self.task_counter,
+                "tasks": self.tasks_dict,
+                "user_dnd": dnd_data,
+            })
+            save_json_atomic(DATA_FILE, document)
         except Exception as e:
             print(f"Error saving tasks data: {e}")
+
+    def load_tli_credentials(self):
+        if not os.path.exists(TLI_CREDENTIALS_FILE):
+            return
+        try:
+            with open(TLI_CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            users = raw.get("users", raw) if isinstance(raw, dict) else {}
+            self.tli_credentials = {
+                str(user_id): record
+                for user_id, record in users.items()
+                if isinstance(record, dict) and isinstance(record.get("token"), str)
+            }
+        except Exception as e:
+            print(f"Error loading TLITODOS credentials: {e}")
+
+    def save_tli_credentials(self):
+        save_json_atomic(
+            TLI_CREDENTIALS_FILE,
+            {"schema_version": 1, "users": self.tli_credentials},
+        )
+        try:
+            os.chmod(TLI_CREDENTIALS_FILE, 0o600)
+        except OSError:
+            pass
+
+    def _tli_client_for(self, user_id):
+        record = self.tli_credentials.get(str(user_id))
+        if not record:
+            return None
+        return TLITODOSClient(record["token"], TLI_BASE_URL)
+
+    def _build_task(self, raw_task):
+        parts = raw_task.split()
+        deadline_str = None
+        content = raw_task
+        if len(parts) > 1:
+            last_word = parts[-1]
+            if last_word.lower() == 'week':
+                content = " ".join(parts[:-1])
+                deadline_str = (get_kst_now() + timedelta(days=7)).strftime("%Y-%m-%d")
+            elif last_word.isdigit():
+                content = " ".join(parts[:-1])
+                deadline_str = (get_kst_now() + timedelta(days=int(last_word))).strftime("%Y-%m-%d")
+        return {
+            "content": content,
+            "important": False,
+            "hobby": False,
+            "deadline": deadline_str,
+        }
+
+    def _store_task(self, task_data):
+        task_id = self.task_counter
+        self.tasks_dict[task_id] = task_data
+        self.task_counter += 1
+        self.save_data()
+        return task_id
+
+    def _linked_tli_client(self, task_data):
+        link = task_data.get("tli")
+        if not isinstance(link, dict) or "todo_id" not in link:
+            return None, None
+        owner_id = str(link.get("owner_id", ""))
+        return self._tli_client_for(owner_id), link
+
+    @staticmethod
+    def _tli_error_text(error):
+        if error.status == 401:
+            return "TLITODOS 토큰이 만료되었거나 유효하지 않습니다. `!reg_tli <token>`으로 다시 등록해 주세요."
+        return f"TLITODOS 오류: {error}"
 
     def cog_unload(self):
         self.reminder_loop.cancel()
@@ -186,31 +281,92 @@ class Tasks(commands.Cog):
 
     @commands.command()
     async def add(self, ctx, *, task):
-        parts = task.split()
-        deadline_str = None
-        if len(parts) > 1:
-            last_word = parts[-1]
-            if last_word.lower() == 'week':
-                task = " ".join(parts[:-1])
-                now = get_kst_now()
-                target_date = now + timedelta(days=7)
-                deadline_str = target_date.strftime("%Y-%m-%d")
-            elif last_word.isdigit():
-                days = int(last_word)
-                task = " ".join(parts[:-1])
-                now = get_kst_now()
-                target_date = now + timedelta(days=days)
-                deadline_str = target_date.strftime("%Y-%m-%d")
-
-        self.tasks_dict[self.task_counter] = {"content": task, "important": False, "hobby": False, "deadline": deadline_str}
-        
-        msg = f"✅ 추가 완료: `[{self.task_counter}] {task}`"
-        if deadline_str:
-            msg += f" (자동 데드라인: {deadline_str})"
-            
+        task_data = self._build_task(task)
+        task_id = self._store_task(task_data)
+        msg = f"✅ 추가 완료: `[{task_id}] {task_data['content']}`"
+        if task_data["deadline"]:
+            msg += f" (자동 데드라인: {task_data['deadline']})"
         await ctx.send(msg)
-        self.task_counter += 1
-        self.save_data()
+
+    @commands.command()
+    async def reg_tli(self, ctx, *, token):
+        message_deleted = True
+        try:
+            await ctx.message.delete()
+        except (discord.Forbidden, discord.HTTPException):
+            message_deleted = False
+
+        client = TLITODOSClient(token.strip(), TLI_BASE_URL)
+        try:
+            profile = await client.me()
+        except TLITODOSError as error:
+            await ctx.send(f"⚠️ {self._tli_error_text(error)}")
+            return
+
+        self.tli_credentials[str(ctx.author.id)] = {
+            "token": token.strip(),
+            "tli_user_id": profile.get("userId"),
+        }
+        self.save_tli_credentials()
+        warning = "" if message_deleted else " 봇에 메시지 삭제 권한이 없어 원본 토큰 메시지는 직접 삭제해 주세요."
+        await ctx.send(f"🔐 {ctx.author.mention}님의 TLITODOS 계정을 등록했습니다.{warning}")
+
+    @commands.command()
+    async def add_both(self, ctx, *, task):
+        client = self._tli_client_for(ctx.author.id)
+        if client is None:
+            await ctx.send("⚠️ 먼저 `!reg_tli <token>`으로 TLITODOS 토큰을 등록해 주세요.")
+            return
+
+        task_data = self._build_task(task)
+        try:
+            todo_id = await client.create_todo(task_data)
+        except TLITODOSError as error:
+            await ctx.send(f"⚠️ {self._tli_error_text(error)}")
+            return
+
+        task_data["tli"] = {
+            "todo_id": todo_id,
+            "owner_id": str(ctx.author.id),
+        }
+        task_id = self._store_task(task_data)
+        await ctx.send(
+            f"✅ 양쪽에 추가 완료: JFDI `[{task_id}]`, TLITODOS `[{todo_id}]` — {task_data['content']}"
+        )
+
+    @commands.command()
+    async def sync_tli(self, ctx, task_id: int):
+        task_data = self.tasks_dict.get(task_id)
+        if task_data is None:
+            await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
+            return
+
+        client = self._tli_client_for(ctx.author.id)
+        if client is None:
+            await ctx.send("⚠️ 먼저 `!reg_tli <token>`으로 TLITODOS 토큰을 등록해 주세요.")
+            return
+
+        link = task_data.get("tli")
+        if isinstance(link, dict) and str(link.get("owner_id")) != str(ctx.author.id):
+            await ctx.send("⚠️ 이 항목은 다른 사용자의 TLITODOS 계정에 연결되어 있습니다.")
+            return
+
+        try:
+            if isinstance(link, dict) and link.get("todo_id") is not None:
+                todo_id = int(link["todo_id"])
+                await client.update_todo(todo_id, task_data)
+                action = "갱신"
+            else:
+                todo_id = await client.create_todo(task_data)
+                task_data["tli"] = {
+                    "todo_id": todo_id,
+                    "owner_id": str(ctx.author.id),
+                }
+                action = "생성"
+            self.save_data()
+            await ctx.send(f"🔄 동기화 완료: JFDI `[{task_id}]` → TLITODOS `[{todo_id}]` ({action})")
+        except TLITODOSError as error:
+            await ctx.send(f"⚠️ {self._tli_error_text(error)}")
 
     @commands.command()
     async def edit(self, ctx, task_id: int, *, new_task):
@@ -224,9 +380,21 @@ class Tasks(commands.Cog):
     @commands.command()
     async def delete(self, ctx, task_id: int):
         if task_id in self.tasks_dict:
+            client, link = self._linked_tli_client(self.tasks_dict[task_id])
+            if link is not None and client is None:
+                await ctx.send("⚠️ 연결된 TLITODOS 항목을 삭제할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <token>`으로 다시 등록해야 합니다.")
+                return
+            if link is not None:
+                try:
+                    await client.delete_todo(int(link["todo_id"]))
+                except TLITODOSError as error:
+                    if error.status != 404:
+                        await ctx.send(f"⚠️ {self._tli_error_text(error)} JFDI 항목은 유지했습니다.")
+                        return
             del self.tasks_dict[task_id]
-            await ctx.send(f"🗑️ 삭제 완료: ID `{task_id}`")
             self.save_data()
+            suffix = " (TLITODOS에서도 삭제됨)" if link is not None else ""
+            await ctx.send(f"🗑️ 삭제 완료: ID `{task_id}`{suffix}")
         else:
             await ctx.send(f"⚠️ ID `{task_id}` 할 일을 찾을 수 없습니다.")
 
@@ -247,6 +415,16 @@ class Tasks(commands.Cog):
                 return
 
             task_content = self.tasks_dict[task_id]["content"]
+            client, link = self._linked_tli_client(self.tasks_dict[task_id])
+            if link is not None and client is None:
+                await ctx.send("⚠️ 연결된 TLITODOS 항목을 완료할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <token>`으로 다시 등록해야 합니다.")
+                return
+            if link is not None:
+                try:
+                    await client.complete_todo(int(link["todo_id"]))
+                except TLITODOSError as error:
+                    await ctx.send(f"⚠️ {self._tli_error_text(error)} JFDI 항목은 유지했습니다.")
+                    return
             del self.tasks_dict[task_id]
             await ctx.send(f"✔️ 완료하셨군요! 수고하셨습니다: **{task_content}**")
             self.save_data()

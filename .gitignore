@@ -1,5 +1,11 @@
 # Environments
 .env
+.venv/
+tasks_data.json
+tasks_data.v1.backup.json
+timetable_data.json
+tli_credentials.json
+tli_credentials.json.tmp
 
 # __pycache__
 __pycache__/
