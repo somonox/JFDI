@@ -2,7 +2,12 @@ import unittest
 
 from aiohttp import web
 
-from utils.tlitodos import TLITODOSClient, TLITODOSError, task_to_tli_payload
+from utils.tlitodos import (
+    TLITODOSClient,
+    TLITODOSError,
+    daily_dates,
+    task_to_tli_payload,
+)
 
 
 class PayloadTests(unittest.TestCase):
@@ -23,10 +28,23 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["visibility"], "PRIVATE")
         self.assertTrue(payload["isRoutine"])
 
+    def test_daily_dates_are_inclusive(self):
+        self.assertEqual(
+            daily_dates("2026-08-27", "2026-08-29"),
+            ["2026-08-27", "2026-08-28", "2026-08-29"],
+        )
+
+    def test_daily_dates_reject_reverse_range(self):
+        with self.assertRaises(ValueError):
+            daily_dates("2026-08-29", "2026-08-27")
+
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.requests = []
+        self.created_bodies = []
+        self.next_todo_id = 99
+        self.fail_create_on = None
         app = web.Application()
         app.router.add_get("/api/v1/users/me", self.me)
         app.router.add_post("/api/v1/auth/refresh", self.refresh)
@@ -83,7 +101,17 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["categoryId"], 4)
         self.assertEqual(body["title"], "동기화 테스트")
         self.assertTrue(body["isRoutine"])
-        return web.json_response({"todoId": 99}, status=201)
+        self.created_bodies.append(body)
+        if (
+            self.fail_create_on is not None
+            and body.get("dueDate") == self.fail_create_on
+        ):
+            return web.json_response(
+                {"detail": {"message": "create failed"}}, status=500
+            )
+        todo_id = self.next_todo_id
+        self.next_todo_id += 1
+        return web.json_response({"todoId": todo_id}, status=201)
 
     async def delete_todo(self, request):
         self.requests.append(request)
@@ -113,6 +141,35 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await self.client.delete_todo(99)
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(str(caught.exception), "already gone")
+
+    async def test_create_routine_posts_every_inclusive_date(self):
+        todo_ids = await self.client.create_routine(
+            {"content": "동기화 테스트", "deadline": "2026-08-29"},
+            "2026-08-27",
+            "2026-08-29",
+        )
+
+        self.assertEqual(todo_ids, [99, 100, 101])
+        self.assertEqual(
+            [body["dueDate"] for body in self.created_bodies],
+            ["2026-08-27", "2026-08-28", "2026-08-29"],
+        )
+        self.assertTrue(all(body["isRoutine"] for body in self.created_bodies))
+
+    async def test_create_routine_rolls_back_partial_creation(self):
+        self.fail_create_on = "2026-08-28"
+
+        with self.assertRaises(TLITODOSError):
+            await self.client.create_routine(
+                {"content": "동기화 테스트", "deadline": "2026-08-29"},
+                "2026-08-27",
+                "2026-08-29",
+            )
+
+        delete_paths = [
+            request.path for request in self.requests if request.method == "DELETE"
+        ]
+        self.assertEqual(delete_paths, ["/api/v1/todos/99"])
 
     async def test_update_repairs_category_and_uses_date_only(self):
         await self.client.update_todo(

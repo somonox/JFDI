@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any
 
 import aiohttp
@@ -38,6 +39,18 @@ def task_to_tli_payload(task: dict[str, Any]) -> dict[str, Any]:
         "groupId": None,
         "isRoutine": True,
     }
+
+
+def daily_dates(start_date: str, end_date: str) -> list[str]:
+    """Return every ISO date in an inclusive daily routine range."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("routine end date cannot be before its start date")
+    return [
+        (start + timedelta(days=offset)).isoformat()
+        for offset in range((end - start).days + 1)
+    ]
 
 
 class TLITODOSClient:
@@ -174,17 +187,126 @@ class TLITODOSClient:
         )
         return int(created["categoryId"])
 
-    async def create_todo(self, task: dict[str, Any]) -> int:
+    async def _create_todo(
+        self,
+        task: dict[str, Any],
+        *,
+        category_id: int,
+        due_date: str | None = None,
+    ) -> int:
         payload = task_to_tli_payload(task)
-        payload["categoryId"] = await self._category_id()
+        payload["categoryId"] = category_id
+        if due_date is not None:
+            payload["dueDate"] = due_date
         result = await self._request("POST", "/api/v1/todos", payload=payload)
         return int(result["todoId"])
 
-    async def update_todo(self, todo_id: int, task: dict[str, Any]) -> None:
+    async def create_todo(self, task: dict[str, Any]) -> int:
+        return await self._create_todo(
+            task,
+            category_id=await self._category_id(),
+        )
+
+    async def create_routine(
+        self,
+        task: dict[str, Any],
+        start_date: str,
+        end_date: str,
+    ) -> list[int]:
+        """Create one routine todo per day, matching the TLITODOS frontend."""
+        dates = daily_dates(start_date, end_date)
+        category_id = await self._category_id()
+        created_ids: list[int] = []
+        try:
+            for due_date in dates:
+                created_ids.append(
+                    await self._create_todo(
+                        task,
+                        category_id=category_id,
+                        due_date=due_date,
+                    )
+                )
+        except Exception:
+            for todo_id in created_ids:
+                try:
+                    await self.delete_todo(todo_id)
+                except TLITODOSError:
+                    pass
+            raise
+        return created_ids
+
+    async def update_todo(
+        self,
+        todo_id: int,
+        task: dict[str, Any],
+        *,
+        due_date: str | None = None,
+        category_id: int | None = None,
+    ) -> None:
         payload = task_to_tli_payload(task)
         payload.pop("isRoutine", None)
-        payload["categoryId"] = await self._category_id()
+        payload["categoryId"] = category_id or await self._category_id()
+        if due_date is not None:
+            payload["dueDate"] = due_date
         await self._request("PATCH", f"/api/v1/todos/{todo_id}", payload=payload)
+
+    async def sync_routine(
+        self,
+        todo_ids: list[int],
+        task: dict[str, Any],
+        start_date: str,
+        end_date: str,
+    ) -> list[int]:
+        """Reconcile a linked routine series and return its current todo IDs."""
+        dates = daily_dates(start_date, end_date)
+        category_id = await self._category_id()
+        synced_ids: list[int] = []
+        newly_created_ids: list[int] = []
+
+        try:
+            for index, due_date in enumerate(dates):
+                if index < len(todo_ids):
+                    todo_id = todo_ids[index]
+                    try:
+                        await self.update_todo(
+                            todo_id,
+                            task,
+                            due_date=due_date,
+                            category_id=category_id,
+                        )
+                    except TLITODOSError as error:
+                        if error.status != 404:
+                            raise
+                        todo_id = await self._create_todo(
+                            task,
+                            category_id=category_id,
+                            due_date=due_date,
+                        )
+                        newly_created_ids.append(todo_id)
+                else:
+                    todo_id = await self._create_todo(
+                        task,
+                        category_id=category_id,
+                        due_date=due_date,
+                    )
+                    newly_created_ids.append(todo_id)
+                synced_ids.append(todo_id)
+        except Exception:
+            for todo_id in newly_created_ids:
+                try:
+                    await self.delete_todo(todo_id)
+                except TLITODOSError:
+                    pass
+            raise
+
+        for todo_id in todo_ids[len(dates) :]:
+            try:
+                await self.delete_todo(todo_id)
+            except TLITODOSError as error:
+                if error.status != 404:
+                    raise
+
+        return synced_ids
 
     async def delete_todo(self, todo_id: int) -> None:
         await self._request("DELETE", f"/api/v1/todos/{todo_id}")

@@ -167,10 +167,30 @@ class Tasks(commands.Cog):
 
     def _linked_tli_client(self, task_data):
         link = task_data.get("tli")
-        if not isinstance(link, dict) or "todo_id" not in link:
+        if not isinstance(link, dict) or not (
+            "todo_id" in link or "todo_ids" in link
+        ):
             return None, None
         owner_id = str(link.get("owner_id", ""))
         return self._tli_client_for(owner_id), link
+
+    @staticmethod
+    def _tli_todo_ids(link):
+        if not isinstance(link, dict):
+            return []
+        raw_ids = link.get("todo_ids")
+        if not isinstance(raw_ids, list):
+            raw_ids = [link.get("todo_id")]
+
+        todo_ids = []
+        for raw_id in raw_ids:
+            try:
+                todo_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if todo_id not in todo_ids:
+                todo_ids.append(todo_id)
+        return todo_ids
 
     @staticmethod
     def _tli_error_text(error):
@@ -376,19 +396,25 @@ class Tasks(commands.Cog):
                 "⚠️ TLITODOS에는 마감일이 필요합니다. `!add_both <내용> <D-day 숫자|week>` 형식으로 입력해 주세요. 예: `!add_both 과제 제출 3`"
             )
             return
+        routine_start = get_kst_now().strftime("%Y-%m-%d")
         try:
-            todo_id = await client.create_todo(task_data)
+            todo_ids = await client.create_routine(
+                task_data, routine_start, task_data["deadline"]
+            )
         except TLITODOSError as error:
             await ctx.send(f"⚠️ {self._tli_error_text(error)}")
             return
 
         task_data["tli"] = {
-            "todo_id": todo_id,
+            "todo_ids": todo_ids,
             "owner_id": str(ctx.author.id),
+            "routine_start": routine_start,
+            "routine_end": task_data["deadline"],
         }
         task_id = self._store_task(task_data)
         await ctx.send(
-            f"✅ 양쪽에 추가 완료: JFDI `[{task_id}]`, TLITODOS `[{todo_id}]` — {task_data['content']}"
+            f"✅ 양쪽에 추가 완료: JFDI `[{task_id}]`, TLITODOS 루틴 {len(todo_ids)}개 "
+            f"({routine_start}~{task_data['deadline']}) — {task_data['content']}"
         )
 
     @commands.command()
@@ -413,20 +439,35 @@ class Tasks(commands.Cog):
             await ctx.send("⚠️ 이 항목은 다른 사용자의 TLITODOS 계정에 연결되어 있습니다.")
             return
 
+        routine_start = (
+            link.get("routine_start")
+            if isinstance(link, dict)
+            else get_kst_now().strftime("%Y-%m-%d")
+        )
+        if not routine_start:
+            routine_start = get_kst_now().strftime("%Y-%m-%d")
+
         try:
-            if isinstance(link, dict) and link.get("todo_id") is not None:
-                todo_id = int(link["todo_id"])
-                await client.update_todo(todo_id, task_data)
-                action = "갱신"
-            else:
-                todo_id = await client.create_todo(task_data)
-                task_data["tli"] = {
-                    "todo_id": todo_id,
-                    "owner_id": str(ctx.author.id),
-                }
-                action = "생성"
+            previous_ids = self._tli_todo_ids(link)
+            todo_ids = await client.sync_routine(
+                previous_ids,
+                task_data,
+                routine_start,
+                task_data["deadline"],
+            )
+            action = "갱신" if previous_ids else "생성"
+            task_data["tli"] = {
+                "todo_ids": todo_ids,
+                "owner_id": str(ctx.author.id),
+                "routine_start": routine_start,
+                "routine_end": task_data["deadline"],
+            }
             self.save_data()
-            await ctx.send(f"🔄 동기화 완료: JFDI `[{task_id}]` → TLITODOS `[{todo_id}]` ({action})")
+            await ctx.send(
+                f"🔄 동기화 완료: JFDI `[{task_id}]` → TLITODOS 루틴 {len(todo_ids)}개 ({action})"
+            )
+        except ValueError:
+            await ctx.send("⚠️ TLITODOS 루틴 종료일은 시작일보다 빠를 수 없습니다.")
         except TLITODOSError as error:
             await ctx.send(f"⚠️ {self._tli_error_text(error)}")
 
@@ -447,12 +488,24 @@ class Tasks(commands.Cog):
                 await ctx.send("⚠️ 연결된 TLITODOS 항목을 삭제할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <accessToken> [refreshToken]`으로 다시 등록해야 합니다.")
                 return
             if link is not None:
-                try:
-                    await client.delete_todo(int(link["todo_id"]))
-                except TLITODOSError as error:
-                    if error.status != 404:
-                        await ctx.send(f"⚠️ {self._tli_error_text(error)} JFDI 항목은 유지했습니다.")
-                        return
+                failed_ids = []
+                last_error = None
+                for todo_id in self._tli_todo_ids(link):
+                    try:
+                        await client.delete_todo(todo_id)
+                    except TLITODOSError as error:
+                        if error.status != 404:
+                            failed_ids.append(todo_id)
+                            last_error = error
+                if failed_ids:
+                    link.pop("todo_id", None)
+                    link["todo_ids"] = failed_ids
+                    self.save_data()
+                    await ctx.send(
+                        f"⚠️ {self._tli_error_text(last_error)} 삭제하지 못한 TLITODOS "
+                        f"항목 {len(failed_ids)}개와 JFDI 항목은 유지했습니다."
+                    )
+                    return
             del self.tasks_dict[task_id]
             self.save_data()
             suffix = " (TLITODOS에서도 삭제됨)" if link is not None else ""
@@ -482,10 +535,23 @@ class Tasks(commands.Cog):
                 await ctx.send("⚠️ 연결된 TLITODOS 항목을 완료할 사용자 토큰이 없습니다. 해당 사용자가 `!reg_tli <accessToken> [refreshToken]`으로 다시 등록해야 합니다.")
                 return
             if link is not None:
-                try:
-                    await client.complete_todo(int(link["todo_id"]))
-                except TLITODOSError as error:
-                    await ctx.send(f"⚠️ {self._tli_error_text(error)} JFDI 항목은 유지했습니다.")
+                failed_ids = []
+                last_error = None
+                for todo_id in self._tli_todo_ids(link):
+                    try:
+                        await client.complete_todo(todo_id)
+                    except TLITODOSError as error:
+                        if error.status != 404:
+                            failed_ids.append(todo_id)
+                            last_error = error
+                if failed_ids:
+                    link.pop("todo_id", None)
+                    link["todo_ids"] = failed_ids
+                    self.save_data()
+                    await ctx.send(
+                        f"⚠️ {self._tli_error_text(last_error)} 완료하지 못한 TLITODOS "
+                        f"항목 {len(failed_ids)}개와 JFDI 항목은 유지했습니다."
+                    )
                     return
             del self.tasks_dict[task_id]
             await ctx.send(f"✔️ 완료하셨군요! 수고하셨습니다: **{task_content}**")
