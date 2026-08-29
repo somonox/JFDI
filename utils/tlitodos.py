@@ -35,7 +35,7 @@ def task_to_tli_payload(task: dict[str, Any]) -> dict[str, Any]:
         "importance": "HIGH" if task.get("important", False) else "NONE",
         "hardship": difficulty,
         "dueDate": due_date,
-        "visibility": "PRIVATE",
+        "visibility": "GROUP",
         "groupId": None,
         "isRoutine": True,
     }
@@ -187,15 +187,27 @@ class TLITODOSClient:
         )
         return int(created["categoryId"])
 
+    async def _group_id(self) -> int:
+        groups = await self._request("GET", "/api/v1/groups")
+        if isinstance(groups, list) and groups:
+            return int(groups[0]["groupId"])
+        raise TLITODOSError(
+            400,
+            "그룹 공개로 등록할 TLITODOS 가입 그룹이 없습니다.",
+        )
+
     async def _create_todo(
         self,
         task: dict[str, Any],
         *,
         category_id: int,
+        group_id: int,
         due_date: str | None = None,
     ) -> int:
         payload = task_to_tli_payload(task)
         payload["categoryId"] = category_id
+        payload["visibility"] = "GROUP"
+        payload["groupId"] = group_id
         if due_date is not None:
             payload["dueDate"] = due_date
         result = await self._request("POST", "/api/v1/todos", payload=payload)
@@ -205,6 +217,7 @@ class TLITODOSClient:
         return await self._create_todo(
             task,
             category_id=await self._category_id(),
+            group_id=await self._group_id(),
         )
 
     async def create_routine(
@@ -216,6 +229,7 @@ class TLITODOSClient:
         """Create one routine todo per day, matching the TLITODOS frontend."""
         dates = daily_dates(start_date, end_date)
         category_id = await self._category_id()
+        group_id = await self._group_id()
         created_ids: list[int] = []
         try:
             for due_date in dates:
@@ -223,6 +237,7 @@ class TLITODOSClient:
                     await self._create_todo(
                         task,
                         category_id=category_id,
+                        group_id=group_id,
                         due_date=due_date,
                     )
                 )
@@ -242,10 +257,13 @@ class TLITODOSClient:
         *,
         due_date: str | None = None,
         category_id: int | None = None,
+        group_id: int | None = None,
     ) -> None:
         payload = task_to_tli_payload(task)
         payload.pop("isRoutine", None)
         payload["categoryId"] = category_id or await self._category_id()
+        payload["visibility"] = "GROUP"
+        payload["groupId"] = group_id or await self._group_id()
         if due_date is not None:
             payload["dueDate"] = due_date
         await self._request("PATCH", f"/api/v1/todos/{todo_id}", payload=payload)
@@ -260,6 +278,7 @@ class TLITODOSClient:
         """Reconcile a linked routine series and return its current todo IDs."""
         dates = daily_dates(start_date, end_date)
         category_id = await self._category_id()
+        group_id = await self._group_id()
         synced_ids: list[int] = []
         newly_created_ids: list[int] = []
 
@@ -273,6 +292,7 @@ class TLITODOSClient:
                             task,
                             due_date=due_date,
                             category_id=category_id,
+                            group_id=group_id,
                         )
                     except TLITODOSError as error:
                         if error.status != 404:
@@ -280,6 +300,7 @@ class TLITODOSClient:
                         todo_id = await self._create_todo(
                             task,
                             category_id=category_id,
+                            group_id=group_id,
                             due_date=due_date,
                         )
                         newly_created_ids.append(todo_id)
@@ -287,6 +308,7 @@ class TLITODOSClient:
                     todo_id = await self._create_todo(
                         task,
                         category_id=category_id,
+                        group_id=group_id,
                         due_date=due_date,
                     )
                     newly_created_ids.append(todo_id)

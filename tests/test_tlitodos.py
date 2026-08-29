@@ -25,7 +25,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["importance"], "HIGH")
         self.assertEqual(payload["hardship"], 5)
         self.assertEqual(payload["dueDate"], "2026-08-27")
-        self.assertEqual(payload["visibility"], "PRIVATE")
+        self.assertEqual(payload["visibility"], "GROUP")
         self.assertTrue(payload["isRoutine"])
 
     def test_daily_dates_are_inclusive(self):
@@ -45,10 +45,12 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.created_bodies = []
         self.next_todo_id = 99
         self.fail_create_on = None
+        self.groups_response = [{"groupId": 5, "name": "테스트 그룹", "memberCount": 2}]
         app = web.Application()
         app.router.add_get("/api/v1/users/me", self.me)
         app.router.add_post("/api/v1/auth/refresh", self.refresh)
         app.router.add_get("/api/v1/categories", self.categories)
+        app.router.add_get("/api/v1/groups", self.groups)
         app.router.add_post("/api/v1/todos", self.create_todo)
         app.router.add_patch("/api/v1/todos/{todo_id}", self.update_todo)
         app.router.add_delete("/api/v1/todos/{todo_id}", self.delete_todo)
@@ -95,12 +97,18 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
+    async def groups(self, request):
+        self.requests.append(request)
+        return web.json_response(self.groups_response)
+
     async def create_todo(self, request):
         self.requests.append(request)
         body = await request.json()
         self.assertEqual(body["categoryId"], 4)
         self.assertEqual(body["title"], "동기화 테스트")
         self.assertTrue(body["isRoutine"])
+        self.assertEqual(body["visibility"], "GROUP")
+        self.assertEqual(body["groupId"], 5)
         self.created_bodies.append(body)
         if (
             self.fail_create_on is not None
@@ -122,6 +130,8 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         body = await request.json()
         self.assertEqual(body["categoryId"], 4)
         self.assertEqual(body["dueDate"], "2026-08-27")
+        self.assertEqual(body["visibility"], "GROUP")
+        self.assertEqual(body["groupId"], 5)
         return web.json_response({"todoId": int(request.match_info["todo_id"]), **body})
 
     async def test_create_uses_registered_bearer_token_and_category(self):
@@ -141,6 +151,16 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await self.client.delete_todo(99)
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(str(caught.exception), "already gone")
+
+    async def test_create_requires_an_joined_group(self):
+        self.groups_response = []
+
+        with self.assertRaises(TLITODOSError) as caught:
+            await self.client.create_todo({"content": "동기화 테스트"})
+
+        self.assertEqual(caught.exception.status, 400)
+        self.assertIn("가입 그룹", str(caught.exception))
+        self.assertEqual(self.created_bodies, [])
 
     async def test_create_routine_posts_every_inclusive_date(self):
         todo_ids = await self.client.create_routine(
